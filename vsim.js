@@ -76,6 +76,7 @@ function VSim() {
             const count = constraints.length 
             bridgeMesh = new THREE.InstancedMesh(bridgeGeom,bridgeMat,count);
             scene.add(bridgeMesh);
+            bridgeMesh.castShadow = true;
             bridgeMesh.frustumCulled = false;
         }
     }
@@ -146,18 +147,34 @@ new GLTFLoader().load('./bridge.glb',glb=>{
     for(let i=0;i<idx.length;i+=2)
         new Constraint(p[idx[i]],p[idx[i+1]]);
 })
-
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 // Lights
 scene.add(new THREE.HemisphereLight(0xffffff,0x222233,1));
 const light = new THREE.DirectionalLight(0xffffff,0.8);
-light.position.set(5, 10, 7);
+light.shadow.mapSize.set(1024,1024);
+light.castShadow = true;
+light.shadow.camera.near = 0.5;
+light.shadow.camera.far = 150;
+light.shadow.camera.left = -100;
+light.shadow.camera.right = 100;
+light.shadow.camera.top = 100;
+light.shadow.camera.bottom = -100;
+light.shadow.camera.updateProjectionMatrix();
+light.shadow.bias = -0.01;
 scene.add(light);
+light.position.set(55, 70, 27);
+scene.add(light);
+//let helper = new THREE.DirectionalLightHelper(light, 5);
+//helper.visible = false;
+//scene.add(helper);
 
 // Ground
 const ground = new THREE.Mesh(new THREE.PlaneGeometry(200,200),new THREE.MeshStandardMaterial({
     color: 0x333333,
     dithering:true
 }));
+ground.receiveShadow = true;
 ground.rotation.x = -Math.PI / 2;
 scene.add(ground);
 
