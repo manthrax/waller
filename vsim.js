@@ -1,9 +1,11 @@
 import*as THREE from 'three';
 
 const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x4040b0)
 const camera = new THREE.PerspectiveCamera(60,innerWidth / innerHeight,0.1,1000);
 camera.position.set(0, 15, 130);
-
+scene.add(camera)
+scene.fog = new THREE.Fog(0x4040b0, 10, 100 )
 const renderer = new THREE.WebGLRenderer({
     antialias: true
 });
@@ -13,10 +15,13 @@ document.body.appendChild(renderer.domElement);
 
 
 function VSim() {
-    const gravity = new THREE.Vector3(0,-0.03,0);
+    const gravity = new THREE.Vector3(0,-0.003,0);
     const friction = 0.999;
+    let vel = new THREE.Vector3();
     let points = this.points = []
     let constraints = this.constraints = []
+    let cursor = this.cursor = vel.clone();
+    
     document.addEventListener('keydown',()=>gravity.multiplyScalar(-1))
     this.Point = class Point {
         constructor(pos, pinned=false) {
@@ -28,9 +33,19 @@ function VSim() {
         update(gravity, friction) {
             if (this.pinned)
                 return;
-            const vel = this.pos.clone().sub(this.prev).multiplyScalar(friction);
+            vel.copy(this.pos).sub(this.prev).multiplyScalar(friction);
             this.prev.copy(this.pos);
             this.pos.add(vel).add(gravity);
+            let cdist = this.pos.distanceTo(cursor)
+            let minDist = cursor.radius || 5;
+            if(cdist<minDist){
+                //Perturb with cursor object
+                this.pos.sub(cursor).setLength(minDist).add(cursor)
+            }
+            if(this.pos.y<0){
+                //Constrain to ground...
+                this.pos.y *= -1;
+            }
         }
     }
 
@@ -60,7 +75,10 @@ function VSim() {
 
     const bridgeGeom = new THREE.BoxGeometry(1,1,1);
     const bridgeMat = new THREE.MeshStandardMaterial({
-        color: 0xff5533
+        color: 0xf00000,
+        blending : THREE.AdditiveBlending,
+        transparent : true,
+        emissive: 0x000000
     });
 
 
@@ -100,8 +118,8 @@ function VSim() {
 
         // Update instances
         getInstances();
-        for (let i = 0; i < constraints.length; i++) {
-            let c = constraints[i];
+        let i = 0;
+        for (let c of constraints) {
             const a = c.p1.pos
               , b = c.p2.pos;
             pos.copy(a).add(b).multiplyScalar(0.5);
@@ -110,9 +128,9 @@ function VSim() {
             dir.normalize();
             right.copy(up);//.cross(up);
             rot.setFromUnitVectors(right,dir);
-            scale.set( .2,len,.2);
+            scale.set( .05,len,.05);
             mat.compose(pos, rot, scale);
-            bridgeMesh.setMatrixAt(i, mat);
+            bridgeMesh.setMatrixAt(i++, mat);
         }
         bridgeMesh.instanceMatrix.needsUpdate = true;
     }
@@ -123,75 +141,124 @@ let {Point, Constraint} = vsim;
 
 import {GLTFLoader} from "three/addons/loaders/GLTFLoader.js"
 
-new GLTFLoader().load('./bridge.glb',glb=>{
+new GLTFLoader().load('./ggbridge.glb',glb=>{
     //scene.add(glb.scene);
-    let ls = glb.scene.children[0]
-    ls.geometry.rotateY(Math.PI*.5);
-    ls.geometry.scale(10,10,10);
+    let objs=[]
 
-    ls.geometry.computeBoundingBox();
-    let idx = ls.geometry.index.array
-    let pts = ls.geometry.attributes.position.array
-    let p=[];
-    let maxx=19.5;
-    let miny=20.;
-    let maxy=0.1;
-    let bb=ls.geometry.boundingBox;
-    for(let i=0;i<pts.length;i+=3){
-        let x=pts[i+0];
-        let y=pts[i+1];
-        let z=pts[i+2];
-        let pin = (y>(bb.max.y-.1))||(y<(bb.min.y+.1))||(x>(bb.max.x-.1))||(x<(bb.min.x+.1));
-        p.push(new Point(new THREE.Vector3(x,y,z),pin));
+    //glb.scene.rotation.y = Math.PI*.5;
+    //glb.scene.scale.multiplyScalar(10);
+    let cam;
+    glb.scene.traverse(e=>(e.isLine&&objs.push(e))||(e.isPerspectiveCamera&&(cam=e)));
+
+    if(cam){
+        glb.scene.localToWorld(camera.position.copy(cam.position));
+        let targ = new THREE.Vector3(0,0,-50).applyQuaternion(cam.quaternion)
+        controls.target.copy(camera.position).add(targ);
+        controls.update();
     }
-    for(let i=0;i<idx.length;i+=2)
-        new Constraint(p[idx[i]],p[idx[i+1]]);
+    let buildObject=(ls,pinAxes = 5)=>{
+        //ls.geometry.rotateY(Math.PI*.5);
+        //ls.geometry.scale(10,10,10);
+        
+        ls.updateMatrixWorld(true);
+        ls.geometry.computeBoundingBox();
+        let idx = ls.geometry.index.array
+        let pts = ls.geometry.attributes.position.array
+        let p=[];
+        let bb=ls.geometry.boundingBox;
+        let tv = new THREE.Vector3();
+        for(let i=0;i<pts.length;i+=3){
+            let x=pts[i+0];
+            let y=pts[i+1];
+            let z=pts[i+2];
+            let edge = .001;
+            let pin = ((pinAxes&1)&&(x>(bb.max.x-edge)))
+                ||((pinAxes&4)&&(y>(bb.max.y-edge)))
+                ||((pinAxes&16)&&(z>(bb.max.z-edge)))
+                ||((pinAxes&2)&&(x<(bb.min.x+edge)))
+                ||((pinAxes&8)&&(y<(bb.min.y+edge)))
+                ||((pinAxes&32)&&(z<(bb.min.z+edge)));
+            
+            tv.set(x,y,z)
+            ls.localToWorld(tv);
+            p.push(new Point(tv,pin));
+        }
+        for(let i=0;i<idx.length;i+=2)
+            new Constraint(p[idx[i]],p[idx[i+1]]);
+    }
+    buildObject(objs[0],5)
+    for(let i=1;i<objs.length;i++)
+        buildObject(objs[i],objs[i].userData.pinAxes||0)
 })
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 // Lights
 scene.add(new THREE.HemisphereLight(0xffffff,0x222233,1));
 const light = new THREE.DirectionalLight(0xffffff,0.8);
-light.shadow.mapSize.set(1024,1024);
+let srad = 50;
+light.shadow.mapSize.set(2048,2048);
 light.castShadow = true;
-light.shadow.camera.near = 0.5;
-light.shadow.camera.far = 150;
-light.shadow.camera.left = -100;
-light.shadow.camera.right = 100;
-light.shadow.camera.top = 100;
-light.shadow.camera.bottom = -100;
+light.shadow.camera.near = 1.;
+light.shadow.camera.far = 100;
+light.shadow.camera.left = -srad;
+light.shadow.camera.right = srad;
+light.shadow.camera.top = srad;
+light.shadow.camera.bottom = -srad;
 light.shadow.camera.updateProjectionMatrix();
-light.shadow.bias = -0.01;
+//light.shadow.bias = -0.01;
 scene.add(light);
-light.position.set(55, 70, 27);
+light.position.set(45, 30, 17);
 scene.add(light);
-//let helper = new THREE.DirectionalLightHelper(light, 5);
-//helper.visible = false;
-//scene.add(helper);
+//scene.add(new THREE.DirectionalLightHelper(light, srad));
+
 
 // Ground
-const ground = new THREE.Mesh(new THREE.PlaneGeometry(200,200),new THREE.MeshStandardMaterial({
-    color: 0x333333,
+const ground = new THREE.Mesh(new THREE.PlaneGeometry(2000,2000,10,10),new THREE.MeshStandardMaterial({
+    color: 0x223333,
     dithering:true
 }));
 ground.receiveShadow = true;
 ground.rotation.x = -Math.PI / 2;
 scene.add(ground);
 
-// Animate
-function animate() {
-    requestAnimationFrame(animate);
-    vsim.step();
-    renderer.render(scene, camera);
-}
-animate();
-
 import {OrbitControls} from 'three/addons/controls/OrbitControls.js';
 const controls = new OrbitControls(camera,renderer.domElement);
+controls.enableDamping = true;
+// Animate
+
+let cursor = new THREE.Mesh(new THREE.SphereGeometry(),new THREE.MeshBasicMaterial({wireframe:true}))
+scene.add(cursor);
+let raycaster = new THREE.Raycaster();
+let buttons=0;
+let mouseHandler=(e)=>{
+    buttons=e.buttons;
+    cursor.position.x = ( event.clientX / window.innerWidth ) * 2 - 1;
+    cursor.position.y = - ( event.clientY / window.innerHeight ) * 2 + 1;
+    raycaster.setFromCamera(cursor.position, camera);
+    let intersects = raycaster.intersectObject(ground);
+    cursor.visible = false;
+    if(intersects.length>0){
+        cursor.position.copy(intersects[0].point);
+        vsim.cursor.copy(cursor.position)
+        vsim.cursor.radius = buttons?5.5:2.;
+        cursor.scale.setScalar(vsim.cursor.radius)
+        cursor.visible = true;
+    }   
+};
+
+
+['pointerdown','pointerup','pointermove'].forEach((e)=>document.addEventListener(e,mouseHandler))
+
+function animate() {
+    vsim.step();
+    controls.update();
+    renderer.render(scene, camera);
+}
+renderer.setAnimationLoop(animate);
+
 window.addEventListener('resize', () => {
     camera.aspect = innerWidth / innerHeight;
     camera.updateProjectionMatrix();
-    controls.update();
     renderer.setSize(innerWidth, innerHeight);
 }
 );
